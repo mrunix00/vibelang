@@ -24,7 +24,9 @@ typedef enum {
     EXPR_UNARY,
     EXPR_BINARY,
     EXPR_ASSIGNMENT,
-    EXPR_CALL
+    EXPR_CALL,
+    EXPR_ARRAY,
+    EXPR_INDEX
 } ExpressionType;
 
 struct Expression {
@@ -59,6 +61,13 @@ struct Expression {
             Expression *callee;
             ExpressionList arguments;
         } call;
+        struct {
+            ExpressionList elements;
+        } array_literal;
+        struct {
+            Expression *array;
+            Expression *index;
+        } index;
     } as;
 };
 

@@ -95,6 +95,8 @@ static bool compile_function_statement(Compiler *compiler, const Statement *stat
 static bool compile_return_statement(Compiler *compiler, const Statement *statement, char **error_message);
 static bool compile_assignment(Compiler *compiler, const Expression *expression, char **error_message);
 static bool compile_call(Compiler *compiler, const Expression *expression, char **error_message);
+static bool compile_array_literal(Compiler *compiler, const Expression *expression, char **error_message);
+static bool compile_index_expression(Compiler *compiler, const Expression *expression, char **error_message);
 static void discard_pending_expression(Compiler *compiler);
 
 static void compiler_errorf(char **error_message, const char *format, ...) {
@@ -320,6 +322,22 @@ static void emit_op_call(Compiler *compiler, int dest, int callee, uint8_t arg_c
     for (uint8_t i = 0; i < arg_count; ++i) {
         emit_byte(compiler, args[i]);
     }
+}
+
+static void emit_op_build_array(Compiler *compiler, int dest, uint8_t element_count, const uint8_t *elements) {
+    emit_byte(compiler, OP_BUILD_ARRAY);
+    emit_byte(compiler, (uint8_t)dest);
+    emit_byte(compiler, element_count);
+    for (uint8_t i = 0; i < element_count; ++i) {
+        emit_byte(compiler, elements[i]);
+    }
+}
+
+static void emit_op_array_get(Compiler *compiler, int dest, int array_reg, int index_reg) {
+    emit_byte(compiler, OP_ARRAY_GET);
+    emit_byte(compiler, (uint8_t)dest);
+    emit_byte(compiler, (uint8_t)array_reg);
+    emit_byte(compiler, (uint8_t)index_reg);
 }
 
 static int emit_jump_unconditional(Compiler *compiler) {
@@ -579,6 +597,10 @@ static bool compile_expression(Compiler *compiler, const Expression *expression,
             return compile_assignment(compiler, expression, error_message);
         case EXPR_CALL:
             return compile_call(compiler, expression, error_message);
+        case EXPR_ARRAY:
+            return compile_array_literal(compiler, expression, error_message);
+        case EXPR_INDEX:
+            return compile_index_expression(compiler, expression, error_message);
     }
     compiler_errorf(error_message, "Unknown expression type.");
     return false;
@@ -627,6 +649,51 @@ static bool compile_call(Compiler *compiler, const Expression *expression, char 
     }
     emit_op_call(compiler, callee_reg, callee_reg, (uint8_t)arg_count, arg_registers);
     pop_stack_slots(compiler, (int)arg_count);
+    return true;
+}
+
+static bool compile_array_literal(Compiler *compiler, const Expression *expression, char **error_message) {
+    size_t element_count = expression->as.array_literal.elements.count;
+    if (element_count > UINT8_MAX) {
+        compiler_errorf(error_message, "Array literal has too many elements.");
+        return false;
+    }
+
+    if (element_count == 0) {
+        int dest = 0;
+        if (!push_stack_slot(compiler, error_message, &dest)) {
+            return false;
+        }
+        emit_op_build_array(compiler, dest, 0, NULL);
+        return true;
+    }
+
+    uint8_t element_registers[UINT8_MAX];
+    for (size_t i = 0; i < element_count; ++i) {
+        Expression *element = expression->as.array_literal.elements.items[i];
+        if (!compile_expression(compiler, element, error_message)) {
+            return false;
+        }
+        element_registers[i] = (uint8_t)stack_top_register(compiler, 0);
+    }
+
+    int dest = element_registers[0];
+    emit_op_build_array(compiler, dest, (uint8_t)element_count, element_registers);
+    pop_stack_slots(compiler, (int)element_count - 1);
+    return true;
+}
+
+static bool compile_index_expression(Compiler *compiler, const Expression *expression, char **error_message) {
+    if (!compile_expression(compiler, expression->as.index.array, error_message)) {
+        return false;
+    }
+    if (!compile_expression(compiler, expression->as.index.index, error_message)) {
+        return false;
+    }
+    int index_reg = stack_top_register(compiler, 0);
+    int array_reg = stack_top_register(compiler, 1);
+    emit_op_array_get(compiler, array_reg, array_reg, index_reg);
+    pop_stack_slots(compiler, 1);
     return true;
 }
 

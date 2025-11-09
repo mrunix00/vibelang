@@ -10,3 +10,4 @@ This directory contains example programs written in VibeLang.
 - `calculator.vibe`: Performs basic arithmetic operations.
 - `loop.vibe`: Demonstrates a while loop summing numbers.
 - `strings.vibe`: Shows string concatenation.
+- `arrays.vibe`: Demonstrates array literals, appending, and indexing.

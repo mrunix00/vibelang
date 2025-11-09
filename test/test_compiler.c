@@ -100,3 +100,14 @@ void test_compile_string_concatenation_script(void) {
     assert_string("foobar", run.result);
     vm_free(&run.vm);
 }
+
+void test_compile_array_literal_script(void) {
+    const char *source =
+        "let list = [1, 2, 3];\n"
+        "list += 4;\n"
+        "list[2];\n";
+
+    RunResult run = run_source_or_fail(source);
+    assert_number(3.0, run.result);
+    vm_free(&run.vm);
+}

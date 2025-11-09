@@ -169,4 +169,31 @@ void test_lex_boolean_and_null_literals(void) {
     expect_eof(&lexer);
 }
 
+void test_lex_array_and_plus_equal(void) {
+    const char *source =
+        "let list = [1, 2, 3];\n"
+        "list += 4;";
+
+    Lexer lexer;
+    lexer_init(&lexer, source);
+
+    expect_simple_token(&lexer, TOKEN_KEYWORD_LET, "let");
+    expect_simple_token(&lexer, TOKEN_IDENTIFIER, "list");
+    expect_simple_token(&lexer, TOKEN_EQUAL, "=");
+    expect_simple_token(&lexer, TOKEN_LBRACKET, "[");
+    expect_number_token(&lexer, 1.0, "1");
+    expect_simple_token(&lexer, TOKEN_COMMA, ",");
+    expect_number_token(&lexer, 2.0, "2");
+    expect_simple_token(&lexer, TOKEN_COMMA, ",");
+    expect_number_token(&lexer, 3.0, "3");
+    expect_simple_token(&lexer, TOKEN_RBRACKET, "]");
+    expect_simple_token(&lexer, TOKEN_SEMICOLON, ";");
+
+    expect_simple_token(&lexer, TOKEN_IDENTIFIER, "list");
+    expect_simple_token(&lexer, TOKEN_PLUS_EQUAL, "+=");
+    expect_number_token(&lexer, 4.0, "4");
+    expect_simple_token(&lexer, TOKEN_SEMICOLON, ";");
+    expect_eof(&lexer);
+}
+
 

@@ -54,3 +54,11 @@ function add(a, b) {
 
 let result = add(3, 4); // result = 7
 ```
+
+## Arrays
+
+```js
+let list = [1, 2, 3, 4];
+list[0]; // 1
+list += 5; // [1, 2, 3, 4, 5]
+```

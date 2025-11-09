@@ -1,0 +1,6 @@
+// Array manipulation example
+let numbers = [1, 2, 3];
+numbers += 4;
+let moreNumbers = [5, 6];
+let combined = numbers + moreNumbers;
+combined[4];

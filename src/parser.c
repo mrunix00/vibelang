@@ -169,6 +169,7 @@ static Expression *parse_term(Parser *parser);
 static Expression *parse_factor(Parser *parser);
 static Expression *parse_unary(Parser *parser);
 static Expression *parse_call(Parser *parser);
+static Expression *parse_array_literal(Parser *parser);
 static Expression *parse_primary(Parser *parser);
 static Statement *parse_declaration(Parser *parser);
 static Statement *parse_statement(Parser *parser);
@@ -231,6 +232,37 @@ static Expression *finish_call(Parser *parser, Expression *callee) {
     return call;
 }
 
+static Expression *parse_array_literal(Parser *parser) {
+    Expression *array_expr = allocate_expression(parser, EXPR_ARRAY);
+    if (!array_expr) {
+        return NULL;
+    }
+    array_expr->as.array_literal.elements.items = NULL;
+    array_expr->as.array_literal.elements.count = 0;
+    array_expr->as.array_literal.elements.capacity = 0;
+
+    if (!check(parser, TOKEN_RBRACKET)) {
+        do {
+            Expression *element = parse_expression(parser);
+            if (!element) {
+                expression_free_internal(array_expr);
+                return NULL;
+            }
+            if (!expression_list_append(parser, &array_expr->as.array_literal.elements, element)) {
+                expression_free_internal(array_expr);
+                return NULL;
+            }
+        } while (match(parser, TOKEN_COMMA));
+    }
+
+    if (!consume(parser, TOKEN_RBRACKET, "Expect ']' after array literal.")) {
+        expression_free_internal(array_expr);
+        return NULL;
+    }
+
+    return array_expr;
+}
+
 static Expression *parse_primary(Parser *parser) {
     if (match(parser, TOKEN_KEYWORD_TRUE)) {
         Expression *expr = allocate_expression(parser, EXPR_LITERAL_BOOL);
@@ -265,6 +297,9 @@ static Expression *parse_primary(Parser *parser) {
             }
         }
         return expr;
+    }
+    if (match(parser, TOKEN_LBRACKET)) {
+        return parse_array_literal(parser);
     }
     if (match(parser, TOKEN_IDENTIFIER)) {
         Expression *expr = allocate_expression(parser, EXPR_IDENTIFIER);
@@ -301,6 +336,26 @@ static Expression *parse_call(Parser *parser) {
             if (!expr) {
                 return NULL;
             }
+        } else if (match(parser, TOKEN_LBRACKET)) {
+            Expression *index = parse_expression(parser);
+            if (!index) {
+                expression_free_internal(expr);
+                return NULL;
+            }
+            if (!consume(parser, TOKEN_RBRACKET, "Expect ']' after index.")) {
+                expression_free_internal(expr);
+                expression_free_internal(index);
+                return NULL;
+            }
+            Expression *index_expr = allocate_expression(parser, EXPR_INDEX);
+            if (!index_expr) {
+                expression_free_internal(expr);
+                expression_free_internal(index);
+                return NULL;
+            }
+            index_expr->as.index.array = expr;
+            index_expr->as.index.index = index;
+            expr = index_expr;
         } else {
             break;
         }
@@ -475,7 +530,14 @@ static Expression *parse_assignment(Parser *parser) {
     if (!expr) {
         return NULL;
     }
+    TokenType assignment_type = TOKEN_ERROR;
     if (match(parser, TOKEN_EQUAL)) {
+        assignment_type = TOKEN_EQUAL;
+    } else if (match(parser, TOKEN_PLUS_EQUAL)) {
+        assignment_type = TOKEN_PLUS_EQUAL;
+    }
+
+    if (assignment_type != TOKEN_ERROR) {
         Expression *value = parse_assignment(parser);
         if (!value) {
             expression_free_internal(expr);
@@ -486,6 +548,33 @@ static Expression *parse_assignment(Parser *parser) {
             expression_free_internal(expr);
             expression_free_internal(value);
             return NULL;
+        }
+        if (assignment_type == TOKEN_PLUS_EQUAL) {
+            Expression *identifier_copy = allocate_expression(parser, EXPR_IDENTIFIER);
+            if (!identifier_copy) {
+                expression_free_internal(expr);
+                expression_free_internal(value);
+                return NULL;
+            }
+            identifier_copy->as.identifier.name = copy_string(expr->as.identifier.name);
+            if (!identifier_copy->as.identifier.name) {
+                parser_error(parser, "Out of memory");
+                expression_free_internal(identifier_copy);
+                expression_free_internal(expr);
+                expression_free_internal(value);
+                return NULL;
+            }
+            Expression *binary = allocate_expression(parser, EXPR_BINARY);
+            if (!binary) {
+                expression_free_internal(identifier_copy);
+                expression_free_internal(expr);
+                expression_free_internal(value);
+                return NULL;
+            }
+            binary->as.binary.left = identifier_copy;
+            binary->as.binary.operator_type = TOKEN_PLUS;
+            binary->as.binary.right = value;
+            value = binary;
         }
         char *name = expr->as.identifier.name;
         expr->type = EXPR_ASSIGNMENT;
@@ -915,6 +1004,13 @@ static void expression_free_internal(Expression *expression) {
         case EXPR_CALL:
             expression_free_internal(expression->as.call.callee);
             expression_list_free(&expression->as.call.arguments);
+            break;
+        case EXPR_ARRAY:
+            expression_list_free(&expression->as.array_literal.elements);
+            break;
+        case EXPR_INDEX:
+            expression_free_internal(expression->as.index.array);
+            expression_free_internal(expression->as.index.index);
             break;
     }
     free(expression);

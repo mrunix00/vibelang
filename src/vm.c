@@ -130,6 +130,13 @@ static void blacken_object(VM *vm, Obj *object) {
         }
         case OBJ_STRING:
             break;
+        case OBJ_ARRAY: {
+            ObjArray *array = (ObjArray *)object;
+            for (size_t i = 0; i < array->elements.count; ++i) {
+                mark_value(vm, array->elements.values[i]);
+            }
+            break;
+        }
     }
 }
 
@@ -458,6 +465,37 @@ static InterpretResult run(VM *vm, Value *result_out) {
                 Value b = registers[right];
                 switch (instruction) {
                     case OP_ADD:
+                        if (value_is_array(a)) {
+                            ObjArray *left_array = value_as_array(a);
+                            ObjArray *result = obj_array_copy(vm, left_array->elements.values, left_array->elements.count);
+                            if (!result) {
+                                runtime_error(vm, "Failed to allocate array.");
+                                return INTERPRET_RUNTIME_ERROR;
+                            }
+                            Value array_value = value_make_array(result);
+                            vm_push(vm, array_value);
+                            if (value_is_array(b)) {
+                                ObjArray *right_array = value_as_array(b);
+                                if (!obj_array_extend(vm, result, right_array->elements.values, right_array->elements.count)) {
+                                    vm_pop(vm);
+                                    runtime_error(vm, "Failed to extend array.");
+                                    return INTERPRET_RUNTIME_ERROR;
+                                }
+                            } else {
+                                if (!obj_array_append(vm, result, b)) {
+                                    vm_pop(vm);
+                                    runtime_error(vm, "Failed to append to array.");
+                                    return INTERPRET_RUNTIME_ERROR;
+                                }
+                            }
+                            registers[dest] = array_value;
+                            vm_pop(vm);
+                            break;
+                        }
+                        if (value_is_array(b)) {
+                            runtime_error(vm, "Left operand must be an array for array addition.");
+                            return INTERPRET_RUNTIME_ERROR;
+                        }
                         if (value_is_string(a) && value_is_string(b)) {
                             if (!concatenate(vm, &registers[dest], a, b)) {
                                 runtime_error(vm, "Failed to concatenate strings.");
@@ -561,6 +599,60 @@ static InterpretResult run(VM *vm, Value *result_out) {
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 continue;
+            }
+            case OP_BUILD_ARRAY: {
+                uint8_t dest = read_byte(frame);
+                uint8_t element_count = read_byte(frame);
+                ObjArray *array = obj_array_new(vm);
+                if (!array) {
+                    runtime_error(vm, "Failed to allocate array.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                Value array_value = value_make_array(array);
+                vm_push(vm, array_value);
+                for (uint8_t i = 0; i < element_count; ++i) {
+                    uint8_t source_reg = read_byte(frame);
+                    if (!obj_array_append(vm, array, registers[source_reg])) {
+                        vm_pop(vm);
+                        runtime_error(vm, "Failed to append to array.");
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                }
+                registers[dest] = array_value;
+                vm_pop(vm);
+                break;
+            }
+            case OP_ARRAY_GET: {
+                uint8_t dest = read_byte(frame);
+                uint8_t array_reg = read_byte(frame);
+                uint8_t index_reg = read_byte(frame);
+                Value array_value = registers[array_reg];
+                Value index_value = registers[index_reg];
+                if (!value_is_array(array_value)) {
+                    runtime_error(vm, "Operand is not an array.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                if (!value_is_number(index_value)) {
+                    runtime_error(vm, "Array index must be a number.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                double index_double = value_as_number(index_value);
+                if (index_double < 0.0 || index_double > (double)SIZE_MAX) {
+                    runtime_error(vm, "Array index out of bounds.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                size_t index = (size_t)index_double;
+                if ((double)index != index_double) {
+                    runtime_error(vm, "Array index must be an integer.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                ObjArray *array_obj = value_as_array(array_value);
+                if (index >= array_obj->elements.count) {
+                    runtime_error(vm, "Array index out of range.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                registers[dest] = array_obj->elements.values[index];
+                break;
             }
             case OP_RETURN: {
                 uint8_t src = read_byte(frame);

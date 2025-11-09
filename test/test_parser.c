@@ -191,6 +191,50 @@ void test_parse_call_expression(void) {
     program_free(program);
 }
 
+void test_parse_array_literal_and_index(void) {
+    const char *source =
+        "let list = [1, 2, 3];\n"
+        "list += 4;\n"
+        "list[2];";
+
+    Program *program = parse_success(source);
+
+    TEST_ASSERT_EQUAL_UINT(3, (unsigned int)program->statements.count);
+
+    Statement *let_stmt = program->statements.items[0];
+    TEST_ASSERT_EQUAL_INT(STMT_LET, let_stmt->type);
+    Expression *initializer = let_stmt->as.let_statement.initializer;
+    TEST_ASSERT_NOT_NULL(initializer);
+    TEST_ASSERT_EQUAL_INT(EXPR_ARRAY, initializer->type);
+    TEST_ASSERT_EQUAL_UINT(3, (unsigned int)initializer->as.array_literal.elements.count);
+    Expression *first_element = initializer->as.array_literal.elements.items[0];
+    TEST_ASSERT_EQUAL_INT(EXPR_LITERAL_NUMBER, first_element->type);
+    assert_double_equal(1.0, first_element->as.number_literal.value);
+
+    Statement *assign_stmt = program->statements.items[1];
+    TEST_ASSERT_EQUAL_INT(STMT_EXPRESSION, assign_stmt->type);
+    Expression *assignment_expr = assign_stmt->as.expression_statement.expression;
+    TEST_ASSERT_EQUAL_INT(EXPR_ASSIGNMENT, assignment_expr->type);
+    TEST_ASSERT_EQUAL_STRING("list", assignment_expr->as.assignment.name);
+    Expression *assigned_value = assignment_expr->as.assignment.value;
+    TEST_ASSERT_EQUAL_INT(EXPR_BINARY, assigned_value->type);
+    TEST_ASSERT_EQUAL_INT(TOKEN_PLUS, assigned_value->as.binary.operator_type);
+    TEST_ASSERT_EQUAL_INT(EXPR_IDENTIFIER, assigned_value->as.binary.left->type);
+    TEST_ASSERT_EQUAL_INT(EXPR_LITERAL_NUMBER, assigned_value->as.binary.right->type);
+    assert_double_equal(4.0, assigned_value->as.binary.right->as.number_literal.value);
+
+    Statement *index_stmt = program->statements.items[2];
+    TEST_ASSERT_EQUAL_INT(STMT_EXPRESSION, index_stmt->type);
+    Expression *index_expr = index_stmt->as.expression_statement.expression;
+    TEST_ASSERT_EQUAL_INT(EXPR_INDEX, index_expr->type);
+    TEST_ASSERT_EQUAL_INT(EXPR_IDENTIFIER, index_expr->as.index.array->type);
+    TEST_ASSERT_EQUAL_STRING("list", index_expr->as.index.array->as.identifier.name);
+    TEST_ASSERT_EQUAL_INT(EXPR_LITERAL_NUMBER, index_expr->as.index.index->type);
+    assert_double_equal(2.0, index_expr->as.index.index->as.number_literal.value);
+
+    program_free(program);
+}
+
 void test_parser_reports_error(void) {
     char *error = NULL;
     Program *program = parser_parse("let x = ;", &error);

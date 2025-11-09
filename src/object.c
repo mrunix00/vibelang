@@ -42,6 +42,88 @@ static ObjString *allocate_string(VM *vm, char *chars, size_t length, uint32_t h
     return string;
 }
 
+static bool array_resize(VM *vm, ValueArray *array, size_t new_capacity) {
+    size_t old_bytes = array->capacity * sizeof(Value);
+    Value *values = NULL;
+    if (new_capacity > 0) {
+        values = (Value *)realloc(array->values, new_capacity * sizeof(Value));
+        if (!values) {
+            return false;
+        }
+    } else {
+        free(array->values);
+    }
+    array->values = values;
+    array->capacity = new_capacity;
+    vm->bytes_allocated += (new_capacity * sizeof(Value)) - old_bytes;
+    return true;
+}
+
+static void array_ensure_capacity_or_die(VM *vm, ValueArray *array, size_t min_capacity) {
+    if (array->capacity >= min_capacity) {
+        return;
+    }
+    size_t new_capacity = array->capacity == 0 ? 8 : array->capacity;
+    while (new_capacity < min_capacity) {
+        new_capacity *= 2;
+        if (new_capacity < array->capacity) {
+            fprintf(stderr, "Array capacity overflow.\n");
+            exit(EXIT_FAILURE);
+        }
+    }
+    if (!array_resize(vm, array, new_capacity)) {
+        fprintf(stderr, "Failed to grow array storage.\n");
+        exit(EXIT_FAILURE);
+    }
+}
+
+ObjArray *obj_array_new(VM *vm) {
+    if (!vm) {
+        return NULL;
+    }
+    ObjArray *array = (ObjArray *)allocate_object(vm, sizeof(ObjArray), OBJ_ARRAY);
+    array->elements.values = NULL;
+    array->elements.count = 0;
+    array->elements.capacity = 0;
+    return array;
+}
+
+ObjArray *obj_array_copy(VM *vm, const Value *values, size_t count) {
+    ObjArray *array = obj_array_new(vm);
+    if (!array) {
+        return NULL;
+    }
+    if (count > 0) {
+        array_ensure_capacity_or_die(vm, &array->elements, count);
+        memcpy(array->elements.values, values, count * sizeof(Value));
+        array->elements.count = count;
+    }
+    return array;
+}
+
+bool obj_array_append(VM *vm, ObjArray *array, Value value) {
+    if (!vm || !array) {
+        return false;
+    }
+    array_ensure_capacity_or_die(vm, &array->elements, array->elements.count + 1);
+    array->elements.values[array->elements.count++] = value;
+    return true;
+}
+
+bool obj_array_extend(VM *vm, ObjArray *array, const Value *values, size_t count) {
+    if (!vm || !array || !values || count == 0) {
+        if (count == 0) {
+            return true;
+        }
+        return false;
+    }
+    size_t new_count = array->elements.count + count;
+    array_ensure_capacity_or_die(vm, &array->elements, new_count);
+    memcpy(array->elements.values + array->elements.count, values, count * sizeof(Value));
+    array->elements.count = new_count;
+    return true;
+}
+
 ObjString *obj_string_take(VM *vm, char *chars, size_t length) {
     if (!vm || !chars) {
         free(chars);
@@ -114,6 +196,14 @@ void obj_free(VM *vm, Obj *object) {
             vm->bytes_allocated -= string->length + 1;
             free(string->chars);
             free(string);
+            break;
+        }
+        case OBJ_ARRAY: {
+            ObjArray *array = (ObjArray *)object;
+            vm->bytes_allocated -= sizeof(ObjArray);
+            vm->bytes_allocated -= array->elements.capacity * sizeof(Value);
+            free(array->elements.values);
+            free(array);
             break;
         }
         default:

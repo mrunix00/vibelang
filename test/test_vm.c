@@ -117,6 +117,22 @@ static void write_define_global(Chunk *chunk, uint8_t src, uint16_t slot, int li
     chunk_write(chunk, (uint8_t)(slot & 0xFF), line);
 }
 
+static void write_build_array(Chunk *chunk, uint8_t dest, const uint8_t *sources, uint8_t count, int line) {
+    chunk_write(chunk, OP_BUILD_ARRAY, line);
+    chunk_write(chunk, dest, line);
+    chunk_write(chunk, count, line);
+    for (uint8_t i = 0; i < count; ++i) {
+        chunk_write(chunk, sources[i], line);
+    }
+}
+
+static void write_array_get(Chunk *chunk, uint8_t dest, uint8_t array_reg, uint8_t index_reg, int line) {
+    chunk_write(chunk, OP_ARRAY_GET, line);
+    chunk_write(chunk, dest, line);
+    chunk_write(chunk, array_reg, line);
+    chunk_write(chunk, index_reg, line);
+}
+
 static Value make_string_value(VM *vm, const char *text) {
     size_t length = text ? strlen(text) : 0;
     ObjString *string = obj_string_copy(vm, text, length);
@@ -400,6 +416,54 @@ void test_vm_string_concatenation(void) {
     InterpretResult status = vm_interpret(&vm, function, &result);
     TEST_ASSERT_EQUAL_INT(INTERPRET_OK, status);
     assert_string_equal("foobar", result);
+
+    vm_free(&vm);
+}
+
+void test_vm_build_and_index_array(void) {
+    VM vm;
+    vm_init(&vm);
+    ObjFunction *function = obj_function_new(&vm, "main", 0);
+    Chunk *chunk = &function->chunk;
+
+    write_load_const(chunk, 0, value_make_number(1.0), 1);
+    write_load_const(chunk, 1, value_make_number(2.0), 1);
+    uint8_t sources[] = {0, 1};
+    write_build_array(chunk, 0, sources, 2, 1);
+    write_load_const(chunk, 2, value_make_number(1.0), 1);
+    write_array_get(chunk, 1, 0, 2, 1);
+    write_return(chunk, 1, 1);
+    ensure_register_count(function, 3);
+
+    Value result = value_make_null();
+    InterpretResult status = vm_interpret(&vm, function, &result);
+    TEST_ASSERT_EQUAL_INT(INTERPRET_OK, status);
+    assert_number_close(2.0, result);
+
+    vm_free(&vm);
+}
+
+void test_vm_array_addition_appends(void) {
+    VM vm;
+    vm_init(&vm);
+    ObjFunction *function = obj_function_new(&vm, "main", 0);
+    Chunk *chunk = &function->chunk;
+
+    write_load_const(chunk, 0, value_make_number(1.0), 1);
+    write_load_const(chunk, 1, value_make_number(2.0), 1);
+    uint8_t sources[] = {0, 1};
+    write_build_array(chunk, 0, sources, 2, 1);
+    write_load_const(chunk, 1, value_make_number(3.0), 1);
+    write_binary(chunk, OP_ADD, 0, 0, 1, 1);
+    write_load_const(chunk, 2, value_make_number(2.0), 1);
+    write_array_get(chunk, 1, 0, 2, 1);
+    write_return(chunk, 1, 1);
+    ensure_register_count(function, 3);
+
+    Value result = value_make_null();
+    InterpretResult status = vm_interpret(&vm, function, &result);
+    TEST_ASSERT_EQUAL_INT(INTERPRET_OK, status);
+    assert_number_close(3.0, result);
 
     vm_free(&vm);
 }
