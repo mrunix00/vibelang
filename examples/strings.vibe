@@ -1,0 +1,5 @@
+// String concatenation
+let first = "Hello";
+let second = "World";
+let combined = first + " " + second;
+combined;

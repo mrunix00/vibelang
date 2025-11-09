@@ -1,0 +1,3 @@
+// Hello World example
+let message = "Hello, VibeLang!";
+message;
