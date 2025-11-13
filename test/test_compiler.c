@@ -28,6 +28,18 @@ static RunResult run_source_or_fail(const char *source) {
     return run;
 }
 
+static void expect_compile_failure(const char *source) {
+    VM vm;
+    vm_init(&vm);
+    Value result = value_make_null();
+    char *error = NULL;
+    bool ok = compiler_run_source(&vm, source, &result, &error);
+    TEST_ASSERT_FALSE(ok);
+    TEST_ASSERT_NOT_NULL(error);
+    free(error);
+    vm_free(&vm);
+}
+
 static void assert_number(double expected, Value actual) {
     TEST_ASSERT_TRUE(value_is_number(actual));
     double diff = fabs(value_as_number(actual) - expected);
@@ -110,4 +122,40 @@ void test_compile_array_literal_script(void) {
     RunResult run = run_source_or_fail(source);
     assert_number(3.0, run.result);
     vm_free(&run.vm);
+}
+
+void test_compile_class_methods_script(void) {
+    const char *source =
+        "class Counter {\n"
+        "  constructor(start) {\n"
+        "    this.value = start;\n"
+        "  }\n"
+        "  increment() {\n"
+        "    this.value = this.value + 1;\n"
+        "  }\n"
+        "  current() {\n"
+        "    return this.value;\n"
+        "  }\n"
+        "}\n"
+        "let c = Counter(3);\n"
+        "c.increment();\n"
+        "c.increment();\n"
+        "c.current();\n"
+        "c.value;\n";
+
+    RunResult run = run_source_or_fail(source);
+    assert_number(5.0, run.result);
+    vm_free(&run.vm);
+}
+
+void test_compile_constructor_cannot_return_value(void) {
+    const char *source =
+        "class Widget {\n"
+        "  constructor() {\n"
+        "    return 42;\n"
+        "  }\n"
+        "}\n"
+        "Widget();\n";
+
+    expect_compile_failure(source);
 }

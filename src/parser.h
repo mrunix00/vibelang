@@ -8,6 +8,7 @@
 
 typedef struct Expression Expression;
 typedef struct Statement Statement;
+typedef struct ClassMethod ClassMethod;
 
 typedef struct ExpressionList {
     Expression **items;
@@ -26,7 +27,11 @@ typedef enum {
     EXPR_ASSIGNMENT,
     EXPR_CALL,
     EXPR_ARRAY,
-    EXPR_INDEX
+    EXPR_INDEX,
+    EXPR_THIS,
+    EXPR_GET_PROPERTY,
+    EXPR_SET_PROPERTY,
+    EXPR_INVOKE
 } ExpressionType;
 
 struct Expression {
@@ -68,6 +73,22 @@ struct Expression {
             Expression *array;
             Expression *index;
         } index;
+        struct {
+        } this_expression;
+        struct {
+            Expression *object;
+            char *name;
+        } get_property;
+        struct {
+            Expression *object;
+            char *name;
+            Expression *value;
+        } set_property;
+        struct {
+            Expression *object;
+            char *name;
+            ExpressionList arguments;
+        } invoke;
     } as;
 };
 
@@ -84,8 +105,18 @@ typedef enum {
     STMT_WHILE,
     STMT_BLOCK,
     STMT_FUNCTION,
-    STMT_RETURN
+    STMT_RETURN,
+    STMT_CLASS
 } StatementType;
+
+struct ClassMethod {
+    char *name;
+    bool is_constructor;
+    char **parameters;
+    size_t parameter_count;
+    size_t parameter_capacity;
+    Statement *body;
+};
 
 struct Statement {
     StatementType type;
@@ -121,6 +152,12 @@ struct Statement {
             bool has_value;
             Expression *value;
         } return_statement;
+        struct {
+            char *name;
+            ClassMethod *methods;
+            size_t method_count;
+            size_t method_capacity;
+        } class_statement;
     } as;
 };
 

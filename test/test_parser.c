@@ -235,6 +235,58 @@ void test_parse_array_literal_and_index(void) {
     program_free(program);
 }
 
+void test_parse_class_declaration(void) {
+    const char *source =
+        "class Player {\n"
+        "  constructor(x, y) {\n"
+        "    this.x = x;\n"
+        "    this.y = y;\n"
+        "  }\n"
+        "  move(dx, dy) {\n"
+        "    this.x = this.x + dx;\n"
+        "    this.y = this.y + dy;\n"
+        "  }\n"
+        "}\n";
+
+    Program *program = parse_success(source);
+
+    TEST_ASSERT_EQUAL_UINT(1, (unsigned int)program->statements.count);
+    Statement *stmt = program->statements.items[0];
+    TEST_ASSERT_NOT_NULL(stmt);
+    TEST_ASSERT_EQUAL_INT(STMT_CLASS, stmt->type);
+    TEST_ASSERT_EQUAL_STRING("Player", stmt->as.class_statement.name);
+    TEST_ASSERT_EQUAL_UINT(2, (unsigned int)stmt->as.class_statement.method_count);
+
+    ClassMethod *constructor = NULL;
+    ClassMethod *move = NULL;
+    for (size_t i = 0; i < stmt->as.class_statement.method_count; ++i) {
+        ClassMethod *method = &stmt->as.class_statement.methods[i];
+        if (method->is_constructor) {
+            constructor = method;
+        } else if (method->name && strcmp(method->name, "move") == 0) {
+            move = method;
+        }
+    }
+
+    TEST_ASSERT_NOT_NULL(constructor);
+    TEST_ASSERT_EQUAL_UINT(2, (unsigned int)constructor->parameter_count);
+    TEST_ASSERT_EQUAL_STRING("x", constructor->parameters[0]);
+    TEST_ASSERT_EQUAL_STRING("y", constructor->parameters[1]);
+    TEST_ASSERT_NOT_NULL(constructor->body);
+    TEST_ASSERT_EQUAL_INT(STMT_BLOCK, constructor->body->type);
+    TEST_ASSERT_TRUE(constructor->is_constructor);
+
+    TEST_ASSERT_NOT_NULL(move);
+    TEST_ASSERT_EQUAL_UINT(2, (unsigned int)move->parameter_count);
+    TEST_ASSERT_EQUAL_STRING("dx", move->parameters[0]);
+    TEST_ASSERT_EQUAL_STRING("dy", move->parameters[1]);
+    TEST_ASSERT_NOT_NULL(move->body);
+    TEST_ASSERT_EQUAL_INT(STMT_BLOCK, move->body->type);
+    TEST_ASSERT_FALSE(move->is_constructor);
+
+    program_free(program);
+}
+
 void test_parser_reports_error(void) {
     char *error = NULL;
     Program *program = parser_parse("let x = ;", &error);

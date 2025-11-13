@@ -11,3 +11,4 @@ This directory contains example programs written in VibeLang.
 - `loop.vibe`: Demonstrates a while loop summing numbers.
 - `strings.vibe`: Shows string concatenation.
 - `arrays.vibe`: Demonstrates array literals, appending, and indexing.
+- `classes.vibe`: Demonstrates classes, constructors, fields, and methods.

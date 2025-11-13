@@ -34,6 +34,13 @@ struct Compilation {
     GlobalTable globals;
 };
 
+typedef enum {
+    FUNCTION_TYPE_SCRIPT,
+    FUNCTION_TYPE_FUNCTION,
+    FUNCTION_TYPE_METHOD,
+    FUNCTION_TYPE_INITIALIZER
+} FunctionType;
+
 typedef struct {
     int reg;
     bool is_temp;
@@ -68,6 +75,7 @@ struct Compiler {
     int stack_depth;
     bool pending_has_value;
     RegisterResult pending_value;
+    FunctionType type;
 };
 
 static void compiler_errorf(char **error_message, const char *format, ...);
@@ -75,7 +83,7 @@ static void global_table_init(GlobalTable *table);
 static void global_table_free(GlobalTable *table);
 static int global_table_find(const GlobalTable *table, const char *name);
 static bool global_table_add(GlobalTable *table, const char *name, uint16_t *index_out, char **error_message);
-static void compiler_init(Compiler *compiler, Compilation *compilation, Compiler *enclosing, ObjFunction *function, const Program *program);
+static void compiler_init(Compiler *compiler, Compilation *compilation, Compiler *enclosing, ObjFunction *function, const Program *program, FunctionType type);
 static bool compile_statement(Compiler *compiler, const Statement *statement, char **error_message);
 static bool compile_expression(Compiler *compiler, const Expression *expression, char **error_message);
 static Chunk *current_chunk(Compiler *compiler);
@@ -97,6 +105,8 @@ static bool compile_assignment(Compiler *compiler, const Expression *expression,
 static bool compile_call(Compiler *compiler, const Expression *expression, char **error_message);
 static bool compile_array_literal(Compiler *compiler, const Expression *expression, char **error_message);
 static bool compile_index_expression(Compiler *compiler, const Expression *expression, char **error_message);
+static bool compile_class_statement(Compiler *compiler, const Statement *statement, char **error_message);
+static bool compile_method(Compiler *compiler, const ClassMethod *method, int class_reg, char **error_message);
 static void discard_pending_expression(Compiler *compiler);
 
 static void compiler_errorf(char **error_message, const char *format, ...) {
@@ -190,7 +200,7 @@ static Chunk *current_chunk(Compiler *compiler) {
     return &compiler->function->chunk;
 }
 
-static void compiler_init(Compiler *compiler, Compilation *compilation, Compiler *enclosing, ObjFunction *function, const Program *program) {
+static void compiler_init(Compiler *compiler, Compilation *compilation, Compiler *enclosing, ObjFunction *function, const Program *program, FunctionType type) {
     compiler->vm = compilation->vm;
     compiler->program = program;
     compiler->enclosing = enclosing;
@@ -204,6 +214,7 @@ static void compiler_init(Compiler *compiler, Compilation *compilation, Compiler
     compiler->pending_has_value = false;
     compiler->pending_value = register_result_invalid();
     compiler->function->register_count = 0;
+    compiler->type = type;
 }
 
 static void emit_byte(Compiler *compiler, uint8_t byte) {
@@ -340,6 +351,65 @@ static void emit_op_array_get(Compiler *compiler, int dest, int array_reg, int i
     emit_byte(compiler, (uint8_t)index_reg);
 }
 
+static bool make_string_constant(Compiler *compiler, const char *text, uint16_t *index_out, char **error_message) {
+    ObjString *string = obj_string_copy(compiler->vm, text, text ? strlen(text) : 0);
+    if (!string) {
+        compiler_errorf(error_message, "Out of memory while creating string constant.");
+        return false;
+    }
+    Value value = value_make_string(string);
+    vm_push(compiler->vm, value);
+    uint16_t index = chunk_add_constant(current_chunk(compiler), value);
+    vm_pop(compiler->vm);
+    if (index_out) {
+        *index_out = index;
+    }
+    return true;
+}
+
+static void emit_op_class(Compiler *compiler, int dest, uint16_t name_index) {
+    emit_byte(compiler, OP_CLASS);
+    emit_byte(compiler, (uint8_t)dest);
+    emit_byte(compiler, (uint8_t)((name_index >> 8) & 0xFF));
+    emit_byte(compiler, (uint8_t)(name_index & 0xFF));
+}
+
+static void emit_op_method(Compiler *compiler, int class_reg, uint16_t name_index, int method_reg) {
+    emit_byte(compiler, OP_METHOD);
+    emit_byte(compiler, (uint8_t)class_reg);
+    emit_byte(compiler, (uint8_t)((name_index >> 8) & 0xFF));
+    emit_byte(compiler, (uint8_t)(name_index & 0xFF));
+    emit_byte(compiler, (uint8_t)method_reg);
+}
+
+static void emit_op_get_property(Compiler *compiler, int dest, int object_reg, uint16_t name_index) {
+    emit_byte(compiler, OP_GET_PROPERTY);
+    emit_byte(compiler, (uint8_t)dest);
+    emit_byte(compiler, (uint8_t)object_reg);
+    emit_byte(compiler, (uint8_t)((name_index >> 8) & 0xFF));
+    emit_byte(compiler, (uint8_t)(name_index & 0xFF));
+}
+
+static void emit_op_set_property(Compiler *compiler, int object_reg, uint16_t name_index, int value_reg) {
+    emit_byte(compiler, OP_SET_PROPERTY);
+    emit_byte(compiler, (uint8_t)object_reg);
+    emit_byte(compiler, (uint8_t)((name_index >> 8) & 0xFF));
+    emit_byte(compiler, (uint8_t)(name_index & 0xFF));
+    emit_byte(compiler, (uint8_t)value_reg);
+}
+
+static void emit_op_invoke(Compiler *compiler, int dest, int object_reg, uint16_t name_index, uint8_t arg_count, const uint8_t *args) {
+    emit_byte(compiler, OP_INVOKE);
+    emit_byte(compiler, (uint8_t)dest);
+    emit_byte(compiler, (uint8_t)object_reg);
+    emit_byte(compiler, (uint8_t)((name_index >> 8) & 0xFF));
+    emit_byte(compiler, (uint8_t)(name_index & 0xFF));
+    emit_byte(compiler, arg_count);
+    for (uint8_t i = 0; i < arg_count; ++i) {
+        emit_byte(compiler, args[i]);
+    }
+}
+
 static int emit_jump_unconditional(Compiler *compiler) {
     emit_byte(compiler, OP_JUMP);
     emit_byte(compiler, 0xFF);
@@ -393,6 +463,10 @@ static bool emit_return(Compiler *compiler, char **error_message) {
         compiler->pending_has_value = false;
         compiler->has_pending_expression = false;
         compiler->stack_depth = 0;
+        return true;
+    }
+    if (compiler->type == FUNCTION_TYPE_INITIALIZER && compiler->local_count > 0) {
+        emit_return_value(compiler, compiler->locals[0].reg);
         return true;
     }
     int dest = 0;
@@ -601,6 +675,77 @@ static bool compile_expression(Compiler *compiler, const Expression *expression,
             return compile_array_literal(compiler, expression, error_message);
         case EXPR_INDEX:
             return compile_index_expression(compiler, expression, error_message);
+        case EXPR_THIS: {
+            int local = resolve_local(compiler, "this", false, error_message);
+            if (local < 0) {
+                compiler_errorf(error_message, "Cannot use 'this' outside of class method.");
+                return false;
+            }
+            int dest = 0;
+            if (!push_stack_slot(compiler, error_message, &dest)) {
+                return false;
+            }
+            emit_op_move(compiler, dest, compiler->locals[local].reg);
+            return true;
+        }
+        case EXPR_GET_PROPERTY: {
+            if (!compile_expression(compiler, expression->as.get_property.object, error_message)) {
+                return false;
+            }
+            uint16_t name_index = 0;
+            if (!make_string_constant(compiler, expression->as.get_property.name, &name_index, error_message)) {
+                return false;
+            }
+            int object_reg = stack_top_register(compiler, 0);
+            emit_op_get_property(compiler, object_reg, object_reg, name_index);
+            return true;
+        }
+        case EXPR_SET_PROPERTY: {
+            if (!compile_expression(compiler, expression->as.set_property.object, error_message)) {
+                return false;
+            }
+            if (!compile_expression(compiler, expression->as.set_property.value, error_message)) {
+                return false;
+            }
+            int value_reg = stack_top_register(compiler, 0);
+            int object_reg = stack_top_register(compiler, 1);
+            uint16_t name_index = 0;
+            if (!make_string_constant(compiler, expression->as.set_property.name, &name_index, error_message)) {
+                return false;
+            }
+            emit_op_set_property(compiler, object_reg, name_index, value_reg);
+            emit_op_move(compiler, object_reg, value_reg);
+            pop_stack_slots(compiler, 1);
+            return true;
+        }
+        case EXPR_INVOKE: {
+            if (!compile_expression(compiler, expression->as.invoke.object, error_message)) {
+                return false;
+            }
+            size_t arg_count = expression->as.invoke.arguments.count;
+            if (arg_count >= UINT8_MAX) {
+                compiler_errorf(error_message, "Too many arguments in method call.");
+                return false;
+            }
+            for (size_t i = 0; i < arg_count; ++i) {
+                if (!compile_expression(compiler, expression->as.invoke.arguments.items[i], error_message)) {
+                    return false;
+                }
+            }
+            uint16_t name_index = 0;
+            if (!make_string_constant(compiler, expression->as.invoke.name, &name_index, error_message)) {
+                return false;
+            }
+            int object_reg = stack_top_register(compiler, (int)arg_count);
+            uint8_t arg_registers[UINT8_MAX];
+            for (size_t i = 0; i < arg_count; ++i) {
+                int distance = (int)(arg_count - 1 - i);
+                arg_registers[i] = (uint8_t)stack_top_register(compiler, distance);
+            }
+            emit_op_invoke(compiler, object_reg, object_reg, name_index, (uint8_t)arg_count, arg_registers);
+            pop_stack_slots(compiler, (int)arg_count);
+            return true;
+        }
     }
     compiler_errorf(error_message, "Unknown expression type.");
     return false;
@@ -856,6 +1001,66 @@ static bool compile_function_body(Compiler *compiler, const Statement *body, cha
     return emit_return(compiler, error_message);
 }
 
+static bool compile_method(Compiler *compiler, const ClassMethod *method, int class_reg, char **error_message) {
+    size_t required_arity = method->parameter_count + 1;
+    if (required_arity > UINT8_MAX) {
+        compiler_errorf(error_message, "Method '%s' has too many parameters.", method->name ? method->name : "<anonymous>");
+        return false;
+    }
+
+    ObjFunction *function = obj_function_new(compiler->vm, method->name, (int)required_arity);
+    vm_push(compiler->vm, value_make_function(function));
+
+    FunctionType type = method->is_constructor ? FUNCTION_TYPE_INITIALIZER : FUNCTION_TYPE_METHOD;
+    Compiler child;
+    compiler_init(&child, compiler->compilation, compiler, function, compiler->program, type);
+
+    int this_slot = add_local(&child, "this", error_message);
+    if (this_slot < 0) {
+        vm_pop(compiler->vm);
+        return false;
+    }
+    child.locals[this_slot].depth = 0;
+    child.locals[this_slot].is_initialized = true;
+
+    for (size_t i = 0; i < method->parameter_count; ++i) {
+        const char *param = method->parameters[i];
+        int slot = add_local(&child, param, error_message);
+        if (slot < 0) {
+            vm_pop(compiler->vm);
+            return false;
+        }
+        child.locals[slot].depth = 0;
+        child.locals[slot].is_initialized = true;
+    }
+
+    if (!compile_function_body(&child, method->body, error_message)) {
+        vm_pop(compiler->vm);
+        return false;
+    }
+
+    int dest = 0;
+    if (!push_stack_slot(compiler, error_message, &dest)) {
+        vm_pop(compiler->vm);
+        return false;
+    }
+    if (!emit_op_load_constant(compiler, dest, value_make_function(function), error_message)) {
+        vm_pop(compiler->vm);
+        pop_stack_slots(compiler, 1);
+        return false;
+    }
+    vm_pop(compiler->vm);
+
+    uint16_t name_index = 0;
+    if (!make_string_constant(compiler, method->name, &name_index, error_message)) {
+        pop_stack_slots(compiler, 1);
+        return false;
+    }
+    emit_op_method(compiler, class_reg, name_index, dest);
+    pop_stack_slots(compiler, 1);
+    return true;
+}
+
 static bool compile_function_statement(Compiler *compiler, const Statement *statement, char **error_message) {
     const char *name = statement->as.function_statement.name;
     size_t arity = statement->as.function_statement.parameter_count;
@@ -884,7 +1089,7 @@ static bool compile_function_statement(Compiler *compiler, const Statement *stat
     vm_push(compiler->vm, value_make_function(function));
 
     Compiler child;
-    compiler_init(&child, compiler->compilation, compiler, function, compiler->program);
+    compiler_init(&child, compiler->compilation, compiler, function, compiler->program, FUNCTION_TYPE_FUNCTION);
 
     for (size_t i = 0; i < arity; ++i) {
         const char *param = statement->as.function_statement.parameters[i];
@@ -925,6 +1130,10 @@ static bool compile_function_statement(Compiler *compiler, const Statement *stat
 
 static bool compile_return_statement(Compiler *compiler, const Statement *statement, char **error_message) {
     discard_pending_expression(compiler);
+    if (compiler->type == FUNCTION_TYPE_INITIALIZER && statement->as.return_statement.has_value) {
+        compiler_errorf(error_message, "Cannot return a value from constructor.");
+        return false;
+    }
     if (statement->as.return_statement.has_value) {
         if (!compile_expression(compiler, statement->as.return_statement.value, error_message)) {
             return false;
@@ -948,6 +1157,52 @@ static void discard_pending_expression(Compiler *compiler) {
         compiler->has_pending_expression = false;
         compiler->pending_has_value = false;
     }
+}
+
+static bool compile_class_statement(Compiler *compiler, const Statement *statement, char **error_message) {
+    const char *name = statement->as.class_statement.name;
+    uint16_t name_constant = 0;
+    if (!make_string_constant(compiler, name, &name_constant, error_message)) {
+        return false;
+    }
+
+    bool is_global = (compiler->enclosing == NULL && compiler->scope_depth == 0);
+    uint16_t global_index = 0;
+    int local_slot = -1;
+    if (is_global) {
+        if (!global_table_add(compiler->globals, name, &global_index, error_message)) {
+            return false;
+        }
+    } else {
+        local_slot = add_local(compiler, name, error_message);
+        if (local_slot < 0) {
+            return false;
+        }
+    }
+
+    int class_reg = 0;
+    if (!push_stack_slot(compiler, error_message, &class_reg)) {
+        return false;
+    }
+    emit_op_class(compiler, class_reg, name_constant);
+
+    if (is_global) {
+        emit_op_define_global(compiler, class_reg, global_index);
+    } else {
+        Local *local = &compiler->locals[local_slot];
+        local->depth = compiler->scope_depth;
+        local->is_initialized = true;
+        emit_op_move(compiler, local->reg, class_reg);
+    }
+
+    for (size_t i = 0; i < statement->as.class_statement.method_count; ++i) {
+        if (!compile_method(compiler, &statement->as.class_statement.methods[i], class_reg, error_message)) {
+            return false;
+        }
+    }
+
+    pop_stack_slots(compiler, 1);
+    return true;
 }
 
 static bool compile_statement(Compiler *compiler, const Statement *statement, char **error_message) {
@@ -979,6 +1234,8 @@ static bool compile_statement(Compiler *compiler, const Statement *statement, ch
             return compile_function_statement(compiler, statement, error_message);
         case STMT_RETURN:
             return compile_return_statement(compiler, statement, error_message);
+        case STMT_CLASS:
+            return compile_class_statement(compiler, statement, error_message);
     }
     compiler_errorf(error_message, "Unknown statement type.");
     return false;
@@ -998,7 +1255,7 @@ ObjFunction *compiler_compile(VM *vm, const Program *program, char **error_messa
     vm_push(vm, value_make_function(function));
 
     Compiler compiler;
-    compiler_init(&compiler, &compilation, NULL, function, program);
+    compiler_init(&compiler, &compilation, NULL, function, program, FUNCTION_TYPE_SCRIPT);
 
     for (size_t i = 0; i < program->statements.count; ++i) {
         if (!compile_statement(&compiler, program->statements.items[i], error_message)) {

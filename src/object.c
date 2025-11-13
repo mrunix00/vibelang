@@ -59,6 +59,32 @@ static bool array_resize(VM *vm, ValueArray *array, size_t new_capacity) {
     return true;
 }
 
+static bool ensure_property_capacity(VM *vm, ObjProperty **entries, size_t *capacity, size_t required) {
+    size_t current = *capacity;
+    if (current >= required) {
+        return true;
+    }
+    size_t new_capacity = current == 0 ? 4 : current;
+    while (new_capacity < required) {
+        new_capacity *= 2;
+        if (new_capacity < current) {
+            return false;
+        }
+    }
+    ObjProperty *storage = (ObjProperty *)realloc(*entries, new_capacity * sizeof(ObjProperty));
+    if (!storage) {
+        return false;
+    }
+    for (size_t i = current; i < new_capacity; ++i) {
+        storage[i].name = NULL;
+        storage[i].value = value_make_null();
+    }
+    vm->bytes_allocated += (new_capacity - current) * sizeof(ObjProperty);
+    *entries = storage;
+    *capacity = new_capacity;
+    return true;
+}
+
 static void array_ensure_capacity_or_die(VM *vm, ValueArray *array, size_t min_capacity) {
     if (array->capacity >= min_capacity) {
         return;
@@ -122,6 +148,108 @@ bool obj_array_extend(VM *vm, ObjArray *array, const Value *values, size_t count
     memcpy(array->elements.values + array->elements.count, values, count * sizeof(Value));
     array->elements.count = new_count;
     return true;
+}
+
+ObjClass *obj_class_new(VM *vm, ObjString *name) {
+    if (!vm) {
+        return NULL;
+    }
+    ObjClass *klass = (ObjClass *)allocate_object(vm, sizeof(ObjClass), OBJ_CLASS);
+    klass->name = name;
+    klass->methods = NULL;
+    klass->method_count = 0;
+    klass->method_capacity = 0;
+    return klass;
+}
+
+bool obj_class_define_method(VM *vm, ObjClass *klass, ObjString *name, Value method) {
+    if (!vm || !klass || !name) {
+        return false;
+    }
+    for (size_t i = 0; i < klass->method_count; ++i) {
+        if (klass->methods[i].name == name) {
+            klass->methods[i].value = method;
+            return true;
+        }
+    }
+    if (!ensure_property_capacity(vm, &klass->methods, &klass->method_capacity, klass->method_count + 1)) {
+        return false;
+    }
+    klass->methods[klass->method_count].name = name;
+    klass->methods[klass->method_count].value = method;
+    klass->method_count++;
+    return true;
+}
+
+bool obj_class_find_method(ObjClass *klass, ObjString *name, Value *out) {
+    if (!klass || !name) {
+        return false;
+    }
+    for (size_t i = 0; i < klass->method_count; ++i) {
+        if (klass->methods[i].name == name) {
+            if (out) {
+                *out = klass->methods[i].value;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+ObjInstance *obj_instance_new(VM *vm, ObjClass *klass) {
+    if (!vm || !klass) {
+        return NULL;
+    }
+    ObjInstance *instance = (ObjInstance *)allocate_object(vm, sizeof(ObjInstance), OBJ_INSTANCE);
+    instance->klass = klass;
+    instance->fields = NULL;
+    instance->field_count = 0;
+    instance->field_capacity = 0;
+    return instance;
+}
+
+bool obj_instance_get_field(ObjInstance *instance, ObjString *name, Value *out) {
+    if (!instance || !name) {
+        return false;
+    }
+    for (size_t i = 0; i < instance->field_count; ++i) {
+        if (instance->fields[i].name == name) {
+            if (out) {
+                *out = instance->fields[i].value;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+bool obj_instance_set_field(VM *vm, ObjInstance *instance, ObjString *name, Value value) {
+    if (!vm || !instance || !name) {
+        return false;
+    }
+    for (size_t i = 0; i < instance->field_count; ++i) {
+        if (instance->fields[i].name == name) {
+            instance->fields[i].value = value;
+            return true;
+        }
+    }
+    if (!ensure_property_capacity(vm, &instance->fields, &instance->field_capacity, instance->field_count + 1)) {
+        return false;
+    }
+    instance->fields[instance->field_count].name = name;
+    instance->fields[instance->field_count].value = value;
+    instance->field_count++;
+    return true;
+}
+
+ObjBoundMethod *obj_bound_method_new(VM *vm, Value receiver, ObjFunction *method) {
+    if (!vm || !method) {
+        return NULL;
+    }
+    ObjBoundMethod *bound = (ObjBoundMethod *)allocate_object(vm, sizeof(ObjBoundMethod), OBJ_BOUND_METHOD);
+    bound->receiver = receiver;
+    bound->method = method;
+    return bound;
 }
 
 ObjString *obj_string_take(VM *vm, char *chars, size_t length) {
@@ -204,6 +332,28 @@ void obj_free(VM *vm, Obj *object) {
             vm->bytes_allocated -= array->elements.capacity * sizeof(Value);
             free(array->elements.values);
             free(array);
+            break;
+        }
+        case OBJ_CLASS: {
+            ObjClass *klass = (ObjClass *)object;
+            vm->bytes_allocated -= sizeof(ObjClass);
+            vm->bytes_allocated -= klass->method_capacity * sizeof(ObjProperty);
+            free(klass->methods);
+            free(klass);
+            break;
+        }
+        case OBJ_INSTANCE: {
+            ObjInstance *instance = (ObjInstance *)object;
+            vm->bytes_allocated -= sizeof(ObjInstance);
+            vm->bytes_allocated -= instance->field_capacity * sizeof(ObjProperty);
+            free(instance->fields);
+            free(instance);
+            break;
+        }
+        case OBJ_BOUND_METHOD: {
+            ObjBoundMethod *bound = (ObjBoundMethod *)object;
+            vm->bytes_allocated -= sizeof(ObjBoundMethod);
+            free(bound);
             break;
         }
         default:

@@ -1,0 +1,22 @@
+class Player {
+  constructor(name, x, y) {
+    this.name = name;
+    this.x = x;
+    this.y = y;
+  }
+
+  move(dx, dy) {
+    this.x = this.x + dx;
+    this.y = this.y + dy;
+  }
+
+  distanceSquared() {
+    return this.x * this.x + this.y * this.y;
+  }
+}
+
+let hero = Player("Ari", 0, 0);
+hero.move(2, 3);
+hero.distanceSquared();
+hero.x;
+hero.y;

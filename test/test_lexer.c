@@ -196,4 +196,78 @@ void test_lex_array_and_plus_equal(void) {
     expect_eof(&lexer);
 }
 
+void test_lex_class_and_member_access(void) {
+    const char *source =
+        "class Player {\n"
+        "  constructor(start) {\n"
+        "    this.value = start;\n"
+        "  }\n"
+        "  tick(step) {\n"
+        "    this.value = this.value + step;\n"
+        "  }\n"
+        "}\n"
+        "let p = Player(0);\n"
+        "p.tick(1);\n"
+        "p.value;\n";
+
+    Lexer lexer;
+    lexer_init(&lexer, source);
+
+    expect_simple_token(&lexer, TOKEN_KEYWORD_CLASS, "class");
+    expect_simple_token(&lexer, TOKEN_IDENTIFIER, "Player");
+    expect_simple_token(&lexer, TOKEN_LBRACE, "{");
+    expect_simple_token(&lexer, TOKEN_KEYWORD_CONSTRUCTOR, "constructor");
+    expect_simple_token(&lexer, TOKEN_LPAREN, "(");
+    expect_simple_token(&lexer, TOKEN_IDENTIFIER, "start");
+    expect_simple_token(&lexer, TOKEN_RPAREN, ")");
+    expect_simple_token(&lexer, TOKEN_LBRACE, "{");
+    expect_simple_token(&lexer, TOKEN_KEYWORD_THIS, "this");
+    expect_simple_token(&lexer, TOKEN_DOT, ".");
+    expect_simple_token(&lexer, TOKEN_IDENTIFIER, "value");
+    expect_simple_token(&lexer, TOKEN_EQUAL, "=");
+    expect_simple_token(&lexer, TOKEN_IDENTIFIER, "start");
+    expect_simple_token(&lexer, TOKEN_SEMICOLON, ";");
+    expect_simple_token(&lexer, TOKEN_RBRACE, "}");
+    expect_simple_token(&lexer, TOKEN_IDENTIFIER, "tick");
+    expect_simple_token(&lexer, TOKEN_LPAREN, "(");
+    expect_simple_token(&lexer, TOKEN_IDENTIFIER, "step");
+    expect_simple_token(&lexer, TOKEN_RPAREN, ")");
+    expect_simple_token(&lexer, TOKEN_LBRACE, "{");
+    expect_simple_token(&lexer, TOKEN_KEYWORD_THIS, "this");
+    expect_simple_token(&lexer, TOKEN_DOT, ".");
+    expect_simple_token(&lexer, TOKEN_IDENTIFIER, "value");
+    expect_simple_token(&lexer, TOKEN_EQUAL, "=");
+    expect_simple_token(&lexer, TOKEN_KEYWORD_THIS, "this");
+    expect_simple_token(&lexer, TOKEN_DOT, ".");
+    expect_simple_token(&lexer, TOKEN_IDENTIFIER, "value");
+    expect_simple_token(&lexer, TOKEN_PLUS, "+");
+    expect_simple_token(&lexer, TOKEN_IDENTIFIER, "step");
+    expect_simple_token(&lexer, TOKEN_SEMICOLON, ";");
+    expect_simple_token(&lexer, TOKEN_RBRACE, "}");
+    expect_simple_token(&lexer, TOKEN_RBRACE, "}");
+
+    expect_simple_token(&lexer, TOKEN_KEYWORD_LET, "let");
+    expect_simple_token(&lexer, TOKEN_IDENTIFIER, "p");
+    expect_simple_token(&lexer, TOKEN_EQUAL, "=");
+    expect_simple_token(&lexer, TOKEN_IDENTIFIER, "Player");
+    expect_simple_token(&lexer, TOKEN_LPAREN, "(");
+    expect_number_token(&lexer, 0.0, "0");
+    expect_simple_token(&lexer, TOKEN_RPAREN, ")");
+    expect_simple_token(&lexer, TOKEN_SEMICOLON, ";");
+
+    expect_simple_token(&lexer, TOKEN_IDENTIFIER, "p");
+    expect_simple_token(&lexer, TOKEN_DOT, ".");
+    expect_simple_token(&lexer, TOKEN_IDENTIFIER, "tick");
+    expect_simple_token(&lexer, TOKEN_LPAREN, "(");
+    expect_number_token(&lexer, 1.0, "1");
+    expect_simple_token(&lexer, TOKEN_RPAREN, ")");
+    expect_simple_token(&lexer, TOKEN_SEMICOLON, ";");
+
+    expect_simple_token(&lexer, TOKEN_IDENTIFIER, "p");
+    expect_simple_token(&lexer, TOKEN_DOT, ".");
+    expect_simple_token(&lexer, TOKEN_IDENTIFIER, "value");
+    expect_simple_token(&lexer, TOKEN_SEMICOLON, ";");
+    expect_eof(&lexer);
+}
+
 

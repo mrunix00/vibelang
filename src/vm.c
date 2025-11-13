@@ -137,6 +137,40 @@ static void blacken_object(VM *vm, Obj *object) {
             }
             break;
         }
+        case OBJ_CLASS: {
+            ObjClass *klass = (ObjClass *)object;
+            if (klass->name) {
+                mark_object(vm, (Obj *)klass->name);
+            }
+            for (size_t i = 0; i < klass->method_count; ++i) {
+                if (klass->methods[i].name) {
+                    mark_object(vm, (Obj *)klass->methods[i].name);
+                }
+                mark_value(vm, klass->methods[i].value);
+            }
+            break;
+        }
+        case OBJ_INSTANCE: {
+            ObjInstance *instance = (ObjInstance *)object;
+            if (instance->klass) {
+                mark_object(vm, (Obj *)instance->klass);
+            }
+            for (size_t i = 0; i < instance->field_count; ++i) {
+                if (instance->fields[i].name) {
+                    mark_object(vm, (Obj *)instance->fields[i].name);
+                }
+                mark_value(vm, instance->fields[i].value);
+            }
+            break;
+        }
+        case OBJ_BOUND_METHOD: {
+            ObjBoundMethod *bound = (ObjBoundMethod *)object;
+            mark_value(vm, bound->receiver);
+            if (bound->method) {
+                mark_object(vm, (Obj *)bound->method);
+            }
+            break;
+        }
     }
 }
 
@@ -379,6 +413,66 @@ static bool call_function(VM *vm, CallFrame *caller, ObjFunction *function, uint
 }
 
 static bool call_value(VM *vm, CallFrame *caller, uint8_t dest_reg, Value callee, uint8_t arg_count, const uint8_t *arg_registers) {
+    if (value_is_bound_method(callee)) {
+        ObjBoundMethod *bound = value_as_bound_method(callee);
+        ObjFunction *function = bound->method;
+        if ((uint8_t)arg_count != (uint8_t)(function->arity - 1)) {
+            runtime_error(vm, "Incorrect number of arguments.");
+            return false;
+        }
+        if (!caller) {
+            runtime_error(vm, "Invalid call context.");
+            return false;
+        }
+        uint8_t extended[UINT8_MAX];
+        extended[0] = dest_reg;
+        for (uint8_t i = 0; i < arg_count; ++i) {
+            extended[i + 1] = arg_registers[i];
+        }
+        caller->registers[dest_reg] = bound->receiver;
+        return call_function(vm, caller, function, dest_reg, (uint8_t)(arg_count + 1), extended);
+    }
+
+    if (value_is_class(callee)) {
+        if (!caller) {
+            runtime_error(vm, "Cannot instantiate class in this context.");
+            return false;
+        }
+        ObjClass *klass = value_as_class(callee);
+        ObjInstance *instance = obj_instance_new(vm, klass);
+        if (!instance) {
+            runtime_error(vm, "Failed to allocate instance.");
+            return false;
+        }
+        Value instance_value = value_make_instance(instance);
+        caller->registers[dest_reg] = instance_value;
+
+        ObjString *ctor_name = obj_string_copy(vm, "constructor", strlen("constructor"));
+        Value method_value;
+        if (obj_class_find_method(klass, ctor_name, &method_value)) {
+            if (!value_is_function(method_value)) {
+                runtime_error(vm, "Constructor is not callable.");
+                return false;
+            }
+            ObjFunction *function = value_as_function(method_value);
+            if ((uint8_t)(arg_count + 1) != (uint8_t)function->arity) {
+                runtime_error(vm, "Incorrect number of arguments.");
+                return false;
+            }
+            uint8_t extended[UINT8_MAX];
+            extended[0] = dest_reg;
+            for (uint8_t i = 0; i < arg_count; ++i) {
+                extended[i + 1] = arg_registers[i];
+            }
+            return call_function(vm, caller, function, dest_reg, (uint8_t)(arg_count + 1), extended);
+        }
+        if (arg_count > 0) {
+            runtime_error(vm, "Constructor not defined.");
+            return false;
+        }
+        return true;
+    }
+
     if (value_is_function(callee)) {
         return call_function(vm, caller, value_as_function(callee), dest_reg, arg_count, arg_registers);
     }
@@ -653,6 +747,175 @@ static InterpretResult run(VM *vm, Value *result_out) {
                 }
                 registers[dest] = array_obj->elements.values[index];
                 break;
+            }
+            case OP_GET_PROPERTY: {
+                uint8_t dest = read_byte(frame);
+                uint8_t object_reg = read_byte(frame);
+                uint16_t name_index = read_short(frame);
+                Value object = registers[object_reg];
+                Value name_value = chunk_get_constant(&frame->function->chunk, name_index);
+                if (!value_is_string(name_value)) {
+                    runtime_error(vm, "Property name must be a string constant.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                ObjString *name = value_as_string(name_value);
+
+                if (value_is_instance(object)) {
+                    ObjInstance *instance = value_as_instance(object);
+                    Value field;
+                    if (obj_instance_get_field(instance, name, &field)) {
+                        registers[dest] = field;
+                        break;
+                    }
+                    Value method_value;
+                    if (obj_class_find_method(instance->klass, name, &method_value)) {
+                        if (!value_is_function(method_value)) {
+                            runtime_error(vm, "Method value is not callable.");
+                            return INTERPRET_RUNTIME_ERROR;
+                        }
+                        ObjBoundMethod *bound = obj_bound_method_new(vm, object, value_as_function(method_value));
+                        registers[dest] = value_make_bound_method(bound);
+                        break;
+                    }
+                    runtime_error(vm, "Undefined property on instance.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+
+                if (value_is_class(object)) {
+                    ObjClass *klass = value_as_class(object);
+                    Value method_value;
+                    if (obj_class_find_method(klass, name, &method_value)) {
+                        registers[dest] = method_value;
+                        break;
+                    }
+                    runtime_error(vm, "Undefined property on class.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+
+                runtime_error(vm, "Only instances and classes have properties.");
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            case OP_SET_PROPERTY: {
+                uint8_t object_reg = read_byte(frame);
+                uint16_t name_index = read_short(frame);
+                uint8_t value_reg = read_byte(frame);
+                Value object = registers[object_reg];
+                Value name_value = chunk_get_constant(&frame->function->chunk, name_index);
+                if (!value_is_string(name_value)) {
+                    runtime_error(vm, "Property name must be a string constant.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                ObjString *name = value_as_string(name_value);
+                if (!value_is_instance(object)) {
+                    runtime_error(vm, "Only instances have fields.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                ObjInstance *instance = value_as_instance(object);
+                if (!obj_instance_set_field(vm, instance, name, registers[value_reg])) {
+                    runtime_error(vm, "Failed to set instance field.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                break;
+            }
+            case OP_CLASS: {
+                uint8_t dest = read_byte(frame);
+                uint16_t name_index = read_short(frame);
+                Value name_value = chunk_get_constant(&frame->function->chunk, name_index);
+                if (!value_is_string(name_value)) {
+                    runtime_error(vm, "Class name must be a string.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                ObjString *name = value_as_string(name_value);
+                ObjClass *klass = obj_class_new(vm, name);
+                registers[dest] = value_make_class(klass);
+                break;
+            }
+            case OP_METHOD: {
+                uint8_t class_reg = read_byte(frame);
+                uint16_t name_index = read_short(frame);
+                uint8_t method_reg = read_byte(frame);
+                Value class_value = registers[class_reg];
+                Value name_value = chunk_get_constant(&frame->function->chunk, name_index);
+                if (!value_is_class(class_value)) {
+                    runtime_error(vm, "OP_METHOD target is not a class.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                if (!value_is_string(name_value)) {
+                    runtime_error(vm, "Method name must be a string.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                ObjClass *klass = value_as_class(class_value);
+                ObjString *name = value_as_string(name_value);
+                Value method = registers[method_reg];
+                if (!obj_class_define_method(vm, klass, name, method)) {
+                    runtime_error(vm, "Failed to define method.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                break;
+            }
+            case OP_INVOKE: {
+                uint8_t dest = read_byte(frame);
+                uint8_t object_reg = read_byte(frame);
+                uint16_t name_index = read_short(frame);
+                uint8_t arg_count = read_byte(frame);
+                for (uint8_t i = 0; i < arg_count; ++i) {
+                    argument_registers[i] = read_byte(frame);
+                }
+                Value receiver = registers[object_reg];
+                Value name_value = chunk_get_constant(&frame->function->chunk, name_index);
+                if (!value_is_string(name_value)) {
+                    runtime_error(vm, "Method name must be a string.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                ObjString *name = value_as_string(name_value);
+
+                Value callee;
+                bool pushed_bound = false;
+                if (value_is_instance(receiver)) {
+                    ObjInstance *instance = value_as_instance(receiver);
+                    Value field;
+                    if (obj_instance_get_field(instance, name, &field)) {
+                        callee = field;
+                    } else {
+                        Value method_value;
+                        if (!obj_class_find_method(instance->klass, name, &method_value)) {
+                            runtime_error(vm, "Undefined method on instance.");
+                            return INTERPRET_RUNTIME_ERROR;
+                        }
+                        if (!value_is_function(method_value)) {
+                            runtime_error(vm, "Method value is not callable.");
+                            return INTERPRET_RUNTIME_ERROR;
+                        }
+                        ObjBoundMethod *bound = obj_bound_method_new(vm, receiver, value_as_function(method_value));
+                        Value bound_value = value_make_bound_method(bound);
+                        vm_push(vm, bound_value);
+                        registers[dest] = bound_value;
+                        callee = bound_value;
+                        pushed_bound = true;
+                    }
+                } else if (value_is_class(receiver)) {
+                    ObjClass *klass = value_as_class(receiver);
+                    Value method_value;
+                    if (!obj_class_find_method(klass, name, &method_value)) {
+                        runtime_error(vm, "Undefined method on class.");
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                    callee = method_value;
+                } else {
+                    runtime_error(vm, "Only instances and classes have methods.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+
+                if (!call_value(vm, frame, dest, callee, arg_count, argument_registers)) {
+                    if (pushed_bound) {
+                        vm_pop(vm);
+                    }
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                if (pushed_bound) {
+                    vm_pop(vm);
+                }
+                continue;
             }
             case OP_RETURN: {
                 uint8_t src = read_byte(frame);

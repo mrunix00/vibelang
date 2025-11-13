@@ -137,6 +137,14 @@ static Token number(Lexer *lexer) {
 
 static TokenType identifier_type(const char *start, size_t length) {
     switch (start[0]) {
+        case 'c':
+            if (length == 5 && strncmp(start, "class", length) == 0) {
+                return TOKEN_KEYWORD_CLASS;
+            }
+            if (length == 11 && strncmp(start, "constructor", length) == 0) {
+                return TOKEN_KEYWORD_CONSTRUCTOR;
+            }
+            break;
         case 'e':
             if (length == 4 && strncmp(start, "else", length) == 0) {
                 return TOKEN_KEYWORD_ELSE;
@@ -173,6 +181,9 @@ static TokenType identifier_type(const char *start, size_t length) {
         case 't':
             if (length == 4 && strncmp(start, "true", length) == 0) {
                 return TOKEN_KEYWORD_TRUE;
+            }
+            if (length == 4 && strncmp(start, "this", length) == 0) {
+                return TOKEN_KEYWORD_THIS;
             }
             break;
         case 'w':
@@ -240,6 +251,7 @@ Token lexer_next_token(Lexer *lexer) {
         case ']': return make_token(lexer, TOKEN_RBRACKET);
         case ',': return make_token(lexer, TOKEN_COMMA);
         case ';': return make_token(lexer, TOKEN_SEMICOLON);
+        case '.': return make_token(lexer, TOKEN_DOT);
         case '+':
             return make_token(lexer, match(lexer, '=') ? TOKEN_PLUS_EQUAL : TOKEN_PLUS);
         case '-': return make_token(lexer, TOKEN_MINUS);

@@ -62,3 +62,21 @@ let list = [1, 2, 3, 4];
 list[0]; // 1
 list += 5; // [1, 2, 3, 4, 5]
 ```
+
+## Classes and Objects
+
+```js
+class Player {
+  constructor(x, y) {
+    this.posX = x;
+    this.posY = y;
+  }
+
+  walk() {
+    this.x = this.x + 1;
+  }
+}
+
+let p = Player();
+p.walk();
+```

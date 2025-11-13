@@ -129,6 +129,7 @@ static void synchronize(Parser *parser) {
         }
         switch (parser->current.type) {
             case TOKEN_KEYWORD_FUNCTION:
+            case TOKEN_KEYWORD_CLASS:
             case TOKEN_KEYWORD_LET:
             case TOKEN_KEYWORD_IF:
             case TOKEN_KEYWORD_WHILE:
@@ -169,12 +170,14 @@ static Expression *parse_term(Parser *parser);
 static Expression *parse_factor(Parser *parser);
 static Expression *parse_unary(Parser *parser);
 static Expression *parse_call(Parser *parser);
+static bool parse_argument_list(Parser *parser, ExpressionList *list);
 static Expression *parse_array_literal(Parser *parser);
 static Expression *parse_primary(Parser *parser);
 static Statement *parse_declaration(Parser *parser);
 static Statement *parse_statement(Parser *parser);
 static Statement *parse_let_declaration(Parser *parser);
 static Statement *parse_function_declaration(Parser *parser);
+static Statement *parse_class_declaration(Parser *parser);
 static Statement *parse_if_statement(Parser *parser);
 static Statement *parse_while_statement(Parser *parser);
 static Statement *parse_return_statement(Parser *parser);
@@ -199,6 +202,36 @@ static Expression *make_binary(Parser *parser, Expression *left, TokenType opera
     return expression;
 }
 
+static bool parse_argument_list(Parser *parser, ExpressionList *list) {
+    if (!list) {
+        return false;
+    }
+    list->items = NULL;
+    list->count = 0;
+    list->capacity = 0;
+
+    if (!check(parser, TOKEN_RPAREN)) {
+        do {
+            Expression *argument = parse_expression(parser);
+            if (!argument) {
+                expression_list_free(list);
+                return false;
+            }
+            if (!expression_list_append(parser, list, argument)) {
+                expression_free_internal(argument);
+                expression_list_free(list);
+                return false;
+            }
+        } while (match(parser, TOKEN_COMMA));
+    }
+
+    if (!consume(parser, TOKEN_RPAREN, "Expect ')' after arguments.")) {
+        expression_list_free(list);
+        return false;
+    }
+    return true;
+}
+
 static Expression *finish_call(Parser *parser, Expression *callee) {
     Expression *call = allocate_expression(parser, EXPR_CALL);
     if (!call) {
@@ -210,25 +243,10 @@ static Expression *finish_call(Parser *parser, Expression *callee) {
     call->as.call.arguments.count = 0;
     call->as.call.arguments.capacity = 0;
 
-    if (!check(parser, TOKEN_RPAREN)) {
-        do {
-            Expression *argument = parse_expression(parser);
-            if (!argument) {
-                expression_free_internal(call);
-                return NULL;
-            }
-            if (!expression_list_append(parser, &call->as.call.arguments, argument)) {
-                expression_free_internal(call);
-                return NULL;
-            }
-        } while (match(parser, TOKEN_COMMA));
-    }
-
-    if (!consume(parser, TOKEN_RPAREN, "Expect ')' after arguments.")) {
+    if (!parse_argument_list(parser, &call->as.call.arguments)) {
         expression_free_internal(call);
         return NULL;
     }
-
     return call;
 }
 
@@ -280,6 +298,10 @@ static Expression *parse_primary(Parser *parser) {
     }
     if (match(parser, TOKEN_KEYWORD_NULL)) {
         return allocate_expression(parser, EXPR_LITERAL_NULL);
+    }
+    if (match(parser, TOKEN_KEYWORD_THIS)) {
+        Expression *expr = allocate_expression(parser, EXPR_THIS);
+        return expr;
     }
     if (match(parser, TOKEN_NUMBER)) {
         Expression *expr = allocate_expression(parser, EXPR_LITERAL_NUMBER);
@@ -356,6 +378,46 @@ static Expression *parse_call(Parser *parser) {
             index_expr->as.index.array = expr;
             index_expr->as.index.index = index;
             expr = index_expr;
+        } else if (match(parser, TOKEN_DOT)) {
+            const Token *name_token = consume(parser, TOKEN_IDENTIFIER, "Expect property name after '.'.");
+            if (!name_token) {
+                expression_free_internal(expr);
+                return NULL;
+            }
+            char *name = copy_string(name_token->lexeme);
+            if (!name) {
+                parser_error(parser, "Out of memory");
+                expression_free_internal(expr);
+                return NULL;
+            }
+            if (match(parser, TOKEN_LPAREN)) {
+                Expression *invoke = allocate_expression(parser, EXPR_INVOKE);
+                if (!invoke) {
+                    free(name);
+                    expression_free_internal(expr);
+                    return NULL;
+                }
+                invoke->as.invoke.object = expr;
+                invoke->as.invoke.name = name;
+                invoke->as.invoke.arguments.items = NULL;
+                invoke->as.invoke.arguments.count = 0;
+                invoke->as.invoke.arguments.capacity = 0;
+                if (!parse_argument_list(parser, &invoke->as.invoke.arguments)) {
+                    expression_free_internal(invoke);
+                    return NULL;
+                }
+                expr = invoke;
+            } else {
+                Expression *get = allocate_expression(parser, EXPR_GET_PROPERTY);
+                if (!get) {
+                    free(name);
+                    expression_free_internal(expr);
+                    return NULL;
+                }
+                get->as.get_property.object = expr;
+                get->as.get_property.name = name;
+                expr = get;
+            }
         } else {
             break;
         }
@@ -543,43 +605,51 @@ static Expression *parse_assignment(Parser *parser) {
             expression_free_internal(expr);
             return NULL;
         }
-        if (expr->type != EXPR_IDENTIFIER) {
+        if (expr->type == EXPR_IDENTIFIER) {
+            if (assignment_type == TOKEN_PLUS_EQUAL) {
+                Expression *identifier_copy = allocate_expression(parser, EXPR_IDENTIFIER);
+                if (!identifier_copy) {
+                    expression_free_internal(expr);
+                    expression_free_internal(value);
+                    return NULL;
+                }
+                identifier_copy->as.identifier.name = copy_string(expr->as.identifier.name);
+                if (!identifier_copy->as.identifier.name) {
+                    parser_error(parser, "Out of memory");
+                    expression_free_internal(identifier_copy);
+                    expression_free_internal(expr);
+                    expression_free_internal(value);
+                    return NULL;
+                }
+                Expression *binary = allocate_expression(parser, EXPR_BINARY);
+                if (!binary) {
+                    expression_free_internal(identifier_copy);
+                    expression_free_internal(expr);
+                    expression_free_internal(value);
+                    return NULL;
+                }
+                binary->as.binary.left = identifier_copy;
+                binary->as.binary.operator_type = TOKEN_PLUS;
+                binary->as.binary.right = value;
+                value = binary;
+            }
+            char *name = expr->as.identifier.name;
+            expr->type = EXPR_ASSIGNMENT;
+            expr->as.assignment.name = name;
+            expr->as.assignment.value = value;
+        } else if (expr->type == EXPR_GET_PROPERTY && assignment_type == TOKEN_EQUAL) {
+            Expression *object = expr->as.get_property.object;
+            char *name = expr->as.get_property.name;
+            expr->type = EXPR_SET_PROPERTY;
+            expr->as.set_property.object = object;
+            expr->as.set_property.name = name;
+            expr->as.set_property.value = value;
+        } else {
             parser_error(parser, "Invalid assignment target.");
             expression_free_internal(expr);
             expression_free_internal(value);
             return NULL;
         }
-        if (assignment_type == TOKEN_PLUS_EQUAL) {
-            Expression *identifier_copy = allocate_expression(parser, EXPR_IDENTIFIER);
-            if (!identifier_copy) {
-                expression_free_internal(expr);
-                expression_free_internal(value);
-                return NULL;
-            }
-            identifier_copy->as.identifier.name = copy_string(expr->as.identifier.name);
-            if (!identifier_copy->as.identifier.name) {
-                parser_error(parser, "Out of memory");
-                expression_free_internal(identifier_copy);
-                expression_free_internal(expr);
-                expression_free_internal(value);
-                return NULL;
-            }
-            Expression *binary = allocate_expression(parser, EXPR_BINARY);
-            if (!binary) {
-                expression_free_internal(identifier_copy);
-                expression_free_internal(expr);
-                expression_free_internal(value);
-                return NULL;
-            }
-            binary->as.binary.left = identifier_copy;
-            binary->as.binary.operator_type = TOKEN_PLUS;
-            binary->as.binary.right = value;
-            value = binary;
-        }
-        char *name = expr->as.identifier.name;
-        expr->type = EXPR_ASSIGNMENT;
-        expr->as.assignment.name = name;
-        expr->as.assignment.value = value;
     }
     return expr;
 }
@@ -878,6 +948,139 @@ static Statement *parse_function_declaration(Parser *parser) {
     return statement;
 }
 
+static Statement *parse_class_declaration(Parser *parser) {
+    const Token *name_token = consume(parser, TOKEN_IDENTIFIER, "Expect class name.");
+    if (!name_token) {
+        return NULL;
+    }
+    char *name = copy_string(name_token->lexeme);
+    if (!name) {
+        parser_error(parser, "Out of memory");
+        return NULL;
+    }
+
+    if (!consume(parser, TOKEN_LBRACE, "Expect '{' before class body.")) {
+        free(name);
+        return NULL;
+    }
+
+    Statement *statement = allocate_statement(parser, STMT_CLASS);
+    if (!statement) {
+        free(name);
+        return NULL;
+    }
+    statement->as.class_statement.name = name;
+    statement->as.class_statement.methods = NULL;
+    statement->as.class_statement.method_count = 0;
+    statement->as.class_statement.method_capacity = 0;
+
+    while (!check(parser, TOKEN_RBRACE) && parser->current.type != TOKEN_EOF) {
+        ClassMethod method;
+        method.name = NULL;
+        method.is_constructor = false;
+        method.parameters = NULL;
+        method.parameter_count = 0;
+        method.parameter_capacity = 0;
+        method.body = NULL;
+
+        if (match(parser, TOKEN_KEYWORD_CONSTRUCTOR)) {
+            method.is_constructor = true;
+            method.name = copy_string("constructor");
+            if (!method.name) {
+                parser_error(parser, "Out of memory");
+                goto class_method_fail;
+            }
+        } else {
+            const Token *method_name = consume(parser, TOKEN_IDENTIFIER, "Expect method name.");
+            if (!method_name) {
+                goto class_method_fail;
+            }
+            method.name = copy_string(method_name->lexeme);
+            if (!method.name) {
+                parser_error(parser, "Out of memory");
+                goto class_method_fail;
+            }
+        }
+
+        if (!consume(parser, TOKEN_LPAREN, "Expect '(' after method name.")) {
+            goto class_method_fail;
+        }
+
+        if (!check(parser, TOKEN_RPAREN)) {
+            do {
+                const Token *param_token = consume(parser, TOKEN_IDENTIFIER, "Expect parameter name.");
+                if (!param_token) {
+                    goto class_method_fail;
+                }
+                if (method.parameter_count == method.parameter_capacity) {
+                    size_t new_capacity = method.parameter_capacity == 0 ? 4 : method.parameter_capacity * 2;
+                    char **new_params = (char **)realloc(method.parameters, new_capacity * sizeof(char *));
+                    if (!new_params) {
+                        parser_error(parser, "Out of memory");
+                        goto class_method_fail;
+                    }
+                    method.parameters = new_params;
+                    method.parameter_capacity = new_capacity;
+                }
+                char *param_name = copy_string(param_token->lexeme);
+                if (!param_name) {
+                    parser_error(parser, "Out of memory");
+                    goto class_method_fail;
+                }
+                method.parameters[method.parameter_count++] = param_name;
+            } while (match(parser, TOKEN_COMMA));
+        }
+
+        if (!consume(parser, TOKEN_RPAREN, "Expect ')' after parameters.")) {
+            goto class_method_fail;
+        }
+
+        if (!consume(parser, TOKEN_LBRACE, "Expect '{' before method body.")) {
+            goto class_method_fail;
+        }
+
+        method.body = parse_block(parser);
+        if (!method.body) {
+            goto class_method_fail;
+        }
+
+        if (statement->as.class_statement.method_count == statement->as.class_statement.method_capacity) {
+            size_t new_capacity = statement->as.class_statement.method_capacity == 0 ? 4 : statement->as.class_statement.method_capacity * 2;
+            ClassMethod *new_methods = (ClassMethod *)realloc(statement->as.class_statement.methods, new_capacity * sizeof(ClassMethod));
+            if (!new_methods) {
+                parser_error(parser, "Out of memory");
+                goto class_method_fail;
+            }
+            statement->as.class_statement.methods = new_methods;
+            statement->as.class_statement.method_capacity = new_capacity;
+        }
+        statement->as.class_statement.methods[statement->as.class_statement.method_count++] = method;
+        continue;
+
+class_method_fail:
+        if (method.name) {
+            free(method.name);
+        }
+        for (size_t i = 0; i < method.parameter_count; ++i) {
+            free(method.parameters[i]);
+        }
+        free(method.parameters);
+        if (method.body) {
+            statement_free_internal(method.body);
+        }
+        statement_free_internal(statement);
+        synchronize(parser);
+        return NULL;
+    }
+
+    if (!consume(parser, TOKEN_RBRACE, "Expect '}' after class body.")) {
+        statement_free_internal(statement);
+        return NULL;
+    }
+
+    return statement;
+}
+
 static Statement *parse_statement(Parser *parser) {
     if (match(parser, TOKEN_KEYWORD_IF)) {
         return parse_if_statement(parser);
@@ -895,6 +1098,9 @@ static Statement *parse_statement(Parser *parser) {
 }
 
 static Statement *parse_declaration(Parser *parser) {
+    if (match(parser, TOKEN_KEYWORD_CLASS)) {
+        return parse_class_declaration(parser);
+    }
     if (match(parser, TOKEN_KEYWORD_FUNCTION)) {
         return parse_function_declaration(parser);
     }
@@ -1012,6 +1218,22 @@ static void expression_free_internal(Expression *expression) {
             expression_free_internal(expression->as.index.array);
             expression_free_internal(expression->as.index.index);
             break;
+        case EXPR_THIS:
+            break;
+        case EXPR_GET_PROPERTY:
+            expression_free_internal(expression->as.get_property.object);
+            free(expression->as.get_property.name);
+            break;
+        case EXPR_SET_PROPERTY:
+            expression_free_internal(expression->as.set_property.object);
+            free(expression->as.set_property.name);
+            expression_free_internal(expression->as.set_property.value);
+            break;
+        case EXPR_INVOKE:
+            expression_free_internal(expression->as.invoke.object);
+            free(expression->as.invoke.name);
+            expression_list_free(&expression->as.invoke.arguments);
+            break;
     }
     free(expression);
 }
@@ -1054,6 +1276,19 @@ static void statement_free_internal(Statement *statement) {
             if (statement->as.return_statement.has_value) {
                 expression_free_internal(statement->as.return_statement.value);
             }
+            break;
+        case STMT_CLASS:
+            free(statement->as.class_statement.name);
+            for (size_t i = 0; i < statement->as.class_statement.method_count; ++i) {
+                ClassMethod *method = &statement->as.class_statement.methods[i];
+                free(method->name);
+                for (size_t j = 0; j < method->parameter_count; ++j) {
+                    free(method->parameters[j]);
+                }
+                free(method->parameters);
+                statement_free_internal(method->body);
+            }
+            free(statement->as.class_statement.methods);
             break;
     }
     free(statement);
